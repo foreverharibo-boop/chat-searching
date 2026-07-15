@@ -389,3 +389,22 @@
     color: var(--text-faint);
     text-align: right;
 }
+
+/* ============================================================
+   PC(데스크톱) 전용 팝업 레이아웃
+   - 모바일 규칙은 위에서 절대 건드리지 않음. min-width 미만(=모바일)
+     에서는 이 블록이 아예 매치되지 않아서 기존 전체화면 동작 그대로 유지됨.
+   - .cs-modal은 이미 display:flex + center 정렬이라 배경(딤 처리)만
+     전체화면으로 깔아두고, .cs-panel 크기만 줄여서 가운데 팝업처럼 보이게 함.
+   ============================================================ */
+@media (min-width: 1000px) {
+    .cs-panel {
+        width: min(640px, 92vw);
+        height: auto;
+        max-height: 82vh;
+        margin: auto;
+        border-radius: 18px;
+        box-shadow: 0 24px 70px rgba(0, 0, 0, 0.45), 0 0 0 1px var(--border);
+        padding-bottom: 0;
+    }
+}

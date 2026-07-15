@@ -2,11 +2,13 @@
 // 검색 범위: 현재 채팅 / 선택한 캐릭터의 전체 채팅 / SillyTavern 전체 채팅(모든 캐릭터)
 // DOM에 렌더링됐는지, is_system(고스트)으로 숨겨졌는지와 무관하게
 // 저장된 원본 메시지 배열을 대상으로 검색함.
-// + 검색 결과 북마크 (localStorage)
-// + 다크/라이트 테마 토글 (localStorage에 저장돼서 다음에 열 때도 유지됨)
+// + 검색 결과 북마크 (서버 측 extensionSettings에 저장 -> 폰/PC 어디서 열어도 동일하게 보임)
+// + 다크/라이트 테마 토글 (마찬가지로 서버에 저장돼서 기기 상관없이 유지됨)
 
-const BOOKMARK_KEY = 'chatSearching_bookmarks_v1';
-const THEME_KEY = 'chatSearching_theme_v1';
+const SETTINGS_KEY = 'chatSearching';
+// 예전 버전(로컬 저장 방식) 호환용 - 처음 한 번만 읽어서 서버로 옮기고 지움
+const LEGACY_BOOKMARK_KEY = 'chatSearching_bookmarks_v1';
+const LEGACY_THEME_KEY = 'chatSearching_theme_v1';
 
 const ICONS = {
     close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>',
@@ -83,10 +85,60 @@ function highlightFull(text, query) {
     return escaped.replace(re, (m) => `<mark>${m}</mark>`);
 }
 
+// ---------- 설정 저장소 (서버 측 extensionSettings) ----------
+// ST는 extensionSettings를 계정 settings.json에 저장하기 때문에
+// 폰/PC 어디서 접속하든(같은 ST 서버 계정 기준) 항상 동일한 값을 봄.
+
+function getSettings() {
+    const context = SillyTavern.getContext();
+    if (!context.extensionSettings[SETTINGS_KEY] || typeof context.extensionSettings[SETTINGS_KEY] !== 'object') {
+        context.extensionSettings[SETTINGS_KEY] = {};
+    }
+    const s = context.extensionSettings[SETTINGS_KEY];
+    if (s.theme !== 'light' && s.theme !== 'dark') s.theme = 'dark';
+    if (!Array.isArray(s.bookmarks)) s.bookmarks = [];
+    return s;
+}
+
+function persistSettings() {
+    // 디바운스로 서버에 저장(settings.json). 다른 기기에서 열면 이 값을 그대로 읽음.
+    SillyTavern.getContext().saveSettingsDebounced();
+}
+
+// 예전(localStorage 전용) 버전에서 쓰던 데이터를 최초 1회만 서버로 옮겨줌
+function migrateLegacyLocalStorage() {
+    const settings = getSettings();
+    if (settings._migratedFromLocalStorage) return;
+
+    try {
+        const legacyTheme = localStorage.getItem(LEGACY_THEME_KEY);
+        if (legacyTheme === 'light' || legacyTheme === 'dark') {
+            settings.theme = legacyTheme;
+        }
+
+        const legacyRaw = localStorage.getItem(LEGACY_BOOKMARK_KEY);
+        if (legacyRaw) {
+            const legacyBookmarks = JSON.parse(legacyRaw);
+            if (Array.isArray(legacyBookmarks) && legacyBookmarks.length && !settings.bookmarks.length) {
+                settings.bookmarks = legacyBookmarks;
+            }
+        }
+    } catch (err) {
+        console.warn('[chat-searching] 예전 로컬 저장 데이터 이전 실패', err);
+    }
+
+    settings._migratedFromLocalStorage = true;
+    persistSettings();
+
+    // 이전 끝났으면 옛날 키는 정리 (다음부터는 서버 값이 진짜 원본)
+    localStorage.removeItem(LEGACY_THEME_KEY);
+    localStorage.removeItem(LEGACY_BOOKMARK_KEY);
+}
+
 // ---------- 테마 ----------
 
 function getSavedTheme() {
-    return localStorage.getItem(THEME_KEY) === 'light' ? 'light' : 'dark';
+    return getSettings().theme;
 }
 
 function applyTheme(theme) {
@@ -95,7 +147,8 @@ function applyTheme(theme) {
     // 다음에 누르면 반대 테마로 갈 거라는 걸 아이콘으로 보여줌
     $('#cs-theme-btn').html(theme === 'dark' ? ICONS.sun : ICONS.moon)
         .attr('title', theme === 'dark' ? '라이트 모드로 전환' : '다크 모드로 전환');
-    localStorage.setItem(THEME_KEY, theme);
+    getSettings().theme = theme;
+    persistSettings();
 }
 
 function toggleTheme() {
@@ -103,7 +156,7 @@ function toggleTheme() {
     applyTheme(current === 'dark' ? 'light' : 'dark');
 }
 
-// ---------- 북마크 저장소 (localStorage) ----------
+// ---------- 북마크 저장소 (서버 측 extensionSettings) ----------
 
 function makeBookmarkId(entry) {
     // 같은 캐릭터/파일/메시지 인덱스면 같은 결과로 취급
@@ -111,16 +164,12 @@ function makeBookmarkId(entry) {
 }
 
 function loadBookmarks() {
-    try {
-        return JSON.parse(localStorage.getItem(BOOKMARK_KEY) || '[]');
-    } catch (err) {
-        console.warn('[chat-searching] 북마크 파싱 실패', err);
-        return [];
-    }
+    return getSettings().bookmarks;
 }
 
 function saveBookmarks(list) {
-    localStorage.setItem(BOOKMARK_KEY, JSON.stringify(list));
+    getSettings().bookmarks = list;
+    persistSettings();
 }
 
 function isBookmarked(id) {
@@ -573,6 +622,7 @@ function closeModal() {
 }
 
 jQuery(async () => {
+    migrateLegacyLocalStorage();
     buildUI();
-    console.log('[chat-searching] 로드됨 (v3: 새 디자인 + 다크/라이트 테마 토글)');
+    console.log('[chat-searching] 로드됨 (v4: PC 팝업 레이아웃 + 서버 저장 동기화)');
 });
