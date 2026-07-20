@@ -627,6 +627,7 @@ function collectTaggedCurrentChat() {
         fileName: context.chatId || '현재 채팅',
         avatarUrl: character?.avatar,
         charName: character?.name,
+        isOpenChat: true,
     });
 }
 
@@ -675,7 +676,12 @@ async function collectTaggedOneCharacterAllChats(character, $container, opts = {
             console.warn(`[chat-searching] ${fileName} 스킵됨`, err);
             continue;
         }
-        rows.push(...collectTaggedMessages(content, { fileName, avatarUrl, charName: chName }));
+        rows.push(...collectTaggedMessages(content, {
+            fileName,
+            avatarUrl,
+            charName: chName,
+            isOpenChat: isCurrentlyOpenChatFile(avatarUrl, fileName),
+        }));
     }
     return rows;
 }
@@ -788,18 +794,18 @@ async function bulkDeleteTag(tag) {
     const confirmed = window.confirm(`#${tag} 태그를 ${affected.length}개 메시지에서 전부 지울까? 되돌릴 수 없어.`);
     if (!confirmed) return;
 
-    const context = SillyTavern.getContext();
-    const currentAvatarUrl = context.characterId !== undefined && context.characterId !== null
-        ? context.characters[context.characterId]?.avatar
-        : null;
-    const currentFileName = context.chatId;
-
     // 같은 채팅 파일끼리 묶어서 파일당 한 번씩만 저장
     const byFile = new Map();
     for (const row of affected) {
-        const key = `${row.avatarUrl}::${row.fileName}`;
+        const key = row.isOpenChat ? '__open_chat__' : `${row.avatarUrl}::${row.fileName}`;
         if (!byFile.has(key)) {
-            byFile.set(key, { avatarUrl: row.avatarUrl, fileName: row.fileName, charName: row.charName, msgIndexes: new Set() });
+            byFile.set(key, {
+                avatarUrl: row.avatarUrl,
+                fileName: row.fileName,
+                charName: row.charName,
+                isOpenChat: !!row.isOpenChat,
+                msgIndexes: new Set(),
+            });
         }
         byFile.get(key).msgIndexes.add(row.msgIndex);
     }
@@ -807,11 +813,9 @@ async function bulkDeleteTag(tag) {
     const $cloud = $('#cs-tag-cloud');
     $cloud.html('<div class="cs-loading">태그 지우는 중...</div>');
 
-    for (const { avatarUrl, fileName, charName, msgIndexes } of byFile.values()) {
-        const isCurrentlyOpenChat = avatarUrl === currentAvatarUrl && fileName === currentFileName;
-
+    for (const { avatarUrl, fileName, charName, isOpenChat, msgIndexes } of byFile.values()) {
         try {
-            if (isCurrentlyOpenChat) {
+            if (isOpenChat) {
                 for (const idx of msgIndexes) {
                     const extra = getMsgExtraForTags(idx);
                     if (extra) extra.csTags = extra.csTags.filter((t) => t !== tag);
