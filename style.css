@@ -519,12 +519,20 @@
 .cs-tag-popover {
     background: var(--panel);
     color: var(--text);
-    border: 1px solid var(--border);
+    border: none;
     border-radius: 12px;
     padding: 10px;
     width: 220px;
     box-sizing: border-box;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+}
+
+/* ST 테마가 채팅 텍스트에 걸어두는 text-shadow/filter가 상속돼서
+   글자가 흐릿하게 보이던 문제 -> 팝오버는 패널 밖 별도 DOM이라 따로 초기화 필요 */
+.cs-tag-popover,
+.cs-tag-popover * {
+    text-shadow: none !important;
+    filter: none !important;
 }
 
 .cs-tag-popover-chips {
@@ -564,7 +572,7 @@
     width: 100%;
     box-sizing: border-box;
     background: var(--surface);
-    border: 1px solid var(--border);
+    border: none;
     border-radius: 8px;
     color: var(--text);
     font-size: 13px;
