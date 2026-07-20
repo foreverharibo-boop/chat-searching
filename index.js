@@ -772,7 +772,14 @@ async function bulkDeleteTag(tag) {
         }
     }
 
-    await loadTagCloud();
+    // 서버에서 처음부터 다시 긁어오지 않고, 방금 지운 태그만 캐시에서 빼고 화면만 갱신
+    for (const row of currentTaggedRows) {
+        if (row.tags.includes(tag)) {
+            row.tags = row.tags.filter((t) => t !== tag);
+        }
+    }
+    $('#cs-tag-results').empty();
+    renderTagCloud(rowsInCurrentScope(currentTaggedRows), currentScope() === 'all');
 }
 
 // ---------- 결과 렌더링 ----------
