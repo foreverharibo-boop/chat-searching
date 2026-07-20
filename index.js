@@ -259,7 +259,7 @@ function openTagPopover($anchorBtn, mesId) {
     if (!extra) return;
 
     const $pop = $(`
-        <div class="cs-tag-popover">
+        <div class="cs-tag-popover cs-theme-${getSavedTheme()}">
             <div class="cs-tag-popover-chips"></div>
             <div class="cs-tag-popover-input-row">
                 <input type="text" class="cs-tag-popover-input" placeholder="태그 입력 후 Enter" />
@@ -745,7 +745,7 @@ async function bulkDeleteTag(tag) {
     }
 
     const $cloud = $('#cs-tag-cloud');
-    $cloud.prepend('<div class="cs-loading">태그 지우는 중...</div>');
+    $cloud.html('<div class="cs-loading">태그 지우는 중...</div>');
 
     for (const { avatarUrl, fileName, charName, msgIndexes } of byFile.values()) {
         const isCurrentlyOpenChat = avatarUrl === currentAvatarUrl && fileName === currentFileName;

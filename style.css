@@ -517,14 +517,14 @@
 }
 
 .cs-tag-popover {
-    background: #1d1f24;
-    color: #ECECEE;
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
     border-radius: 12px;
     padding: 10px;
     width: 220px;
     box-sizing: border-box;
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
 }
 
@@ -537,15 +537,15 @@
 
 .cs-tag-popover-empty {
     font-size: 12px;
-    color: rgba(236, 236, 238, 0.4);
+    color: var(--text-faint);
 }
 
 .cs-tag-popover-chip {
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    background: rgba(227, 156, 180, 0.16);
-    color: #E39CB4;
+    background: var(--accent-soft);
+    color: var(--accent);
     font-size: 12px;
     font-weight: 600;
     padding: 3px 7px;
@@ -564,17 +564,17 @@
 .cs-tag-popover-input {
     width: 100%;
     box-sizing: border-box;
-    background: #24262d;
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: var(--surface);
+    border: 1px solid var(--border);
     border-radius: 8px;
-    color: #ECECEE;
+    color: var(--text);
     font-size: 13px;
     font-family: inherit;
     padding: 7px 9px;
 }
 
 .cs-tag-popover-input::placeholder {
-    color: rgba(236, 236, 238, 0.35);
+    color: var(--text-faint);
 }
 
 /* ============================================================
