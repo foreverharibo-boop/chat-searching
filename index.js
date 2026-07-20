@@ -60,6 +60,21 @@ async function fetchChatContent(chName, avatarUrl, fileName) {
     return res.json(); // [0] = 메타데이터, [1..] = 실제 메시지
 }
 
+// 현재 열려있지 않은 채팅 파일도 서버에 직접 저장 (태그 일괄 삭제용)
+async function saveChatContentToFile(avatarUrl, fileName, content) {
+    const res = await fetch('/api/chats/save', {
+        method: 'POST',
+        headers: getRequestHeadersSafe(),
+        body: JSON.stringify({
+            avatar_url: avatarUrl,
+            file_name: fileName.replace(/\.jsonl$/, ''),
+            chat: content,
+            force: true,
+        }),
+    });
+    if (!res.ok) throw new Error(`chat save failed for ${fileName}: ${res.status}`);
+}
+
 function escapeHtml(str) {
     return String(str).replace(/[&<>"']/g, (c) => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -627,6 +642,24 @@ async function collectTaggedAllScope($container) {
 
 let currentTaggedRows = [];
 
+// 캐시된 태그 행들을 지금 선택된 스코프 기준으로 한 번 더 걸러줌
+// (스코프를 바꾼 직후 등 캐시가 안 맞아떨어지는 경우에 대한 안전장치)
+function rowsInCurrentScope(rows) {
+    const scope = currentScope();
+    if (scope === 'all') return rows;
+
+    const context = SillyTavern.getContext();
+    let avatarUrl = null;
+    if (scope === 'current') {
+        const charIndex = context.characterId;
+        avatarUrl = (charIndex !== undefined && charIndex !== null) ? context.characters[charIndex]?.avatar : null;
+    } else {
+        avatarUrl = $('#cs-char-select').val();
+    }
+    if (!avatarUrl) return rows;
+    return rows.filter((r) => r.avatarUrl === avatarUrl);
+}
+
 async function loadTagCloud() {
     const scope = currentScope();
     const $cloud = $('#cs-tag-cloud');
@@ -655,7 +688,7 @@ async function loadTagCloud() {
     }
 
     currentTaggedRows = rows;
-    renderTagCloud(rows, scope === 'all');
+    renderTagCloud(rowsInCurrentScope(rows), scope === 'all');
 }
 
 function renderTagCloud(rows, showCharBadge) {
@@ -667,17 +700,79 @@ function renderTagCloud(rows, showCharBadge) {
     }
     $cloud.empty();
     for (const [tag, count] of counts) {
-        const $chip = $(
-            `<button type="button" class="cs-tag-chip">#${escapeHtml(tag)} <span class="cs-tag-count">${count}</span></button>`,
-        );
-        $chip.on('click', () => {
+        const $chip = $(`
+            <div class="cs-tag-chip">
+                <span class="cs-tag-chip-label">#${escapeHtml(tag)} <span class="cs-tag-count">${count}</span></span>
+                <span class="cs-tag-chip-delete" title="이 태그 전부 삭제">${ICONS.close}</span>
+            </div>
+        `);
+        $chip.find('.cs-tag-chip-label').on('click', () => {
             $('.cs-tag-chip').removeClass('active');
             $chip.addClass('active');
-            const filtered = currentTaggedRows.filter((r) => r.tags.includes(tag));
+            const filtered = rowsInCurrentScope(currentTaggedRows).filter((r) => r.tags.includes(tag));
             renderResults($('#cs-tag-results'), filtered, '', { showCharBadge, tagMode: true });
+        });
+        $chip.find('.cs-tag-chip-delete').on('click', (e) => {
+            e.stopPropagation();
+            bulkDeleteTag(tag);
         });
         $cloud.append($chip);
     }
+}
+
+// 태그 하나를 스코프 안의 모든 메시지에서 한 번에 지움
+async function bulkDeleteTag(tag) {
+    const affected = rowsInCurrentScope(currentTaggedRows).filter((r) => r.tags.includes(tag));
+    if (!affected.length) return;
+
+    const confirmed = window.confirm(`#${tag} 태그를 ${affected.length}개 메시지에서 전부 지울까? 되돌릴 수 없어.`);
+    if (!confirmed) return;
+
+    const context = SillyTavern.getContext();
+    const currentAvatarUrl = context.characterId !== undefined && context.characterId !== null
+        ? context.characters[context.characterId]?.avatar
+        : null;
+    const currentFileName = context.chatId;
+
+    // 같은 채팅 파일끼리 묶어서 파일당 한 번씩만 저장
+    const byFile = new Map();
+    for (const row of affected) {
+        const key = `${row.avatarUrl}::${row.fileName}`;
+        if (!byFile.has(key)) {
+            byFile.set(key, { avatarUrl: row.avatarUrl, fileName: row.fileName, charName: row.charName, msgIndexes: new Set() });
+        }
+        byFile.get(key).msgIndexes.add(row.msgIndex);
+    }
+
+    const $cloud = $('#cs-tag-cloud');
+    $cloud.prepend('<div class="cs-loading">태그 지우는 중...</div>');
+
+    for (const { avatarUrl, fileName, charName, msgIndexes } of byFile.values()) {
+        const isCurrentlyOpenChat = avatarUrl === currentAvatarUrl && fileName === currentFileName;
+
+        try {
+            if (isCurrentlyOpenChat) {
+                for (const idx of msgIndexes) {
+                    const extra = getMsgExtraForTags(idx);
+                    if (extra) extra.csTags = extra.csTags.filter((t) => t !== tag);
+                }
+                await persistChatTags();
+                refreshAllMessageTagButtons();
+            } else {
+                const content = await fetchChatContent(charName, avatarUrl, fileName);
+                for (const idx of msgIndexes) {
+                    if (content[idx]?.extra?.csTags) {
+                        content[idx].extra.csTags = content[idx].extra.csTags.filter((t) => t !== tag);
+                    }
+                }
+                await saveChatContentToFile(avatarUrl, fileName, content);
+            }
+        } catch (err) {
+            console.error(`[chat-searching] ${fileName} 태그 일괄 삭제 실패`, err);
+        }
+    }
+
+    await loadTagCloud();
 }
 
 // ---------- 결과 렌더링 ----------
