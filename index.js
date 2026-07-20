@@ -302,9 +302,8 @@ function addTagButtonToMessage(mesId) {
     if (!getSettings().tagInsertEnabled) return;
     const $mes = $(`.mes[mesid="${mesId}"]`);
     if (!$mes.length) return;
-    // '...' (더보기) 버튼을 눌러야 펼쳐지는 숨은 버튼 영역에 붙임 -> 기본 버튼 줄이 안 지저분해짐
-    const $extraRow = $mes.find('.extraMesButtons');
-    if (!$extraRow.length || $extraRow.find('.cs-tag-msg-btn').length) return;
+    const $btnRow = $mes.find('.mes_buttons');
+    if (!$btnRow.length || $btnRow.find('.cs-tag-msg-btn').length) return;
 
     const extra = getMsgExtraForTags(Number(mesId));
     const hasTags = !!(extra && extra.csTags.length);
@@ -312,7 +311,15 @@ function addTagButtonToMessage(mesId) {
     const $btn = $(
         `<div class="mes_button cs-tag-msg-btn fa-solid fa-hashtag ${hasTags ? 'cs-tag-msg-btn-active' : ''}" title="태그 달기" data-mesid="${mesId}"></div>`,
     );
-    $extraRow.prepend($btn);
+    // ST 내부에 "..." 전용 숨김 컨테이너가 따로 없는 버전도 있어서,
+    // 컨테이너에 의존하지 않고 그냥 mes_buttons 안에 넣되 CSS로 기본 숨김 처리하고
+    // "..." (extraMesButtonsHint) 클릭에 맞춰 우리 버튼만 따로 열고 닫음.
+    const $hint = $btnRow.find('.extraMesButtonsHint');
+    if ($hint.length) {
+        $btn.insertBefore($hint);
+    } else {
+        $btnRow.append($btn);
+    }
 }
 
 function removeAllTagButtons() {
@@ -334,6 +341,13 @@ function bindChatTagEvents() {
         e.stopPropagation();
         const mesId = Number($(this).data('mesid'));
         openTagPopover($(this), mesId);
+    });
+
+    // ST의 "..." (더보기) 버튼을 누르면 우리 태그 버튼도 같이 열리고,
+    // 다시 누르면 같이 닫히게 함 (ST 내부 숨김 컨테이너 클래스에 의존하지 않음)
+    $(document).on('click', '.extraMesButtonsHint', function () {
+        const $mes = $(this).closest('.mes');
+        $mes.find('.cs-tag-msg-btn').toggleClass('cs-tag-msg-btn-open');
     });
 
     const context = SillyTavern.getContext();

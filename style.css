@@ -472,7 +472,12 @@
 /* ---------- 메시지 옆 태그 버튼 & 팝오버 (실제 채팅 DOM에 붙음, ST 테마 변수 밖이라 자체 색상 사용) ---------- */
 
 .mes_button.cs-tag-msg-btn {
+    display: none;
     opacity: 0.55;
+}
+
+.mes_button.cs-tag-msg-btn.cs-tag-msg-btn-open {
+    display: inline-block;
 }
 
 .mes_button.cs-tag-msg-btn:hover {
