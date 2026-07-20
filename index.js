@@ -18,6 +18,7 @@ const ICONS = {
     star: '<svg viewBox="0 0 24 24"><path d="M12 2.5 15 9l7 .9-5.1 4.8L18.2 21 12 17.3 5.8 21l1.3-6.3L2 9.9 9 9l3-6.5Z"/></svg>',
     sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
     moon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z"/></svg>',
+    tag: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9h16M4 15h16M10 3 7 21M17 3l-3 18"/></svg>',
 };
 
 function getRequestHeadersSafe() {
@@ -97,6 +98,7 @@ function getSettings() {
     const s = context.extensionSettings[SETTINGS_KEY];
     if (s.theme !== 'light' && s.theme !== 'dark') s.theme = 'dark';
     if (!Array.isArray(s.bookmarks)) s.bookmarks = [];
+    if (typeof s.tagInsertEnabled !== 'boolean') s.tagInsertEnabled = true;
     return s;
 }
 
@@ -186,6 +188,167 @@ function addBookmark(entry) {
 
 function removeBookmark(id) {
     saveBookmarks(loadBookmarks().filter((b) => b.id !== id));
+}
+
+// ---------- 채팅 메시지 태그 버튼 (msg.extra.csTags에 저장) ----------
+// 북마크/테마와 달리 태그는 "메시지 자체"에 속하는 데이터라서
+// extensionSettings가 아니라 채팅 파일(msg.extra)에 저장함.
+// 채팅 파일 자체가 서버에 있으니까 폰/PC 어디서 열어도 자동으로 같은 태그가 보임.
+
+function getMsgExtraForTags(mesId) {
+    const context = SillyTavern.getContext();
+    const msg = context.chat?.[mesId];
+    if (!msg) return null;
+    if (!msg.extra || typeof msg.extra !== 'object') msg.extra = {};
+    if (!Array.isArray(msg.extra.csTags)) msg.extra.csTags = [];
+    return msg.extra;
+}
+
+async function persistChatTags() {
+    const context = SillyTavern.getContext();
+    try {
+        if (typeof context.saveChat === 'function') {
+            await context.saveChat();
+        } else if (typeof context.saveChatConditional === 'function') {
+            await context.saveChatConditional();
+        } else {
+            console.warn('[chat-searching] saveChat 함수를 못 찾았어. 태그가 서버에 저장 안 될 수 있어.');
+        }
+    } catch (err) {
+        console.error('[chat-searching] 태그 저장 실패', err);
+    }
+}
+
+function syncTagButtonActiveState(mesId) {
+    const extra = getMsgExtraForTags(mesId);
+    $(`.cs-tag-msg-btn[data-mesid="${mesId}"]`).toggleClass('cs-tag-msg-btn-active', !!(extra && extra.csTags.length));
+}
+
+function closeTagPopover() {
+    $('.cs-tag-popover').remove();
+    $(document).off('click.csTagPopoverOutside');
+}
+
+function positionTagPopover($pop, $anchorBtn) {
+    const offset = $anchorBtn.offset();
+    if (!offset) return;
+    const top = offset.top + $anchorBtn.outerHeight() + 4;
+    let left = offset.left - 100;
+    left = Math.max(8, Math.min(left, $(window).width() - 236));
+    $pop.css({ position: 'absolute', top, left, zIndex: 2147483647 });
+}
+
+function openTagPopover($anchorBtn, mesId) {
+    closeTagPopover();
+    const extra = getMsgExtraForTags(mesId);
+    if (!extra) return;
+
+    const $pop = $(`
+        <div class="cs-tag-popover">
+            <div class="cs-tag-popover-chips"></div>
+            <div class="cs-tag-popover-input-row">
+                <input type="text" class="cs-tag-popover-input" placeholder="태그 입력 후 Enter" />
+            </div>
+        </div>
+    `);
+
+    const renderChips = () => {
+        const $chips = $pop.find('.cs-tag-popover-chips');
+        $chips.empty();
+        if (!extra.csTags.length) {
+            $chips.append('<span class="cs-tag-popover-empty">아직 태그 없음</span>');
+            return;
+        }
+        for (const tag of extra.csTags) {
+            const $chip = $(`<span class="cs-tag-popover-chip">#${escapeHtml(tag)} <b class="cs-tag-popover-x">×</b></span>`);
+            $chip.find('.cs-tag-popover-x').on('click', async () => {
+                extra.csTags = extra.csTags.filter((t) => t !== tag);
+                await persistChatTags();
+                renderChips();
+                syncTagButtonActiveState(mesId);
+            });
+            $chips.append($chip);
+        }
+    };
+    renderChips();
+
+    const $input = $pop.find('.cs-tag-popover-input');
+    $input.on('keydown', async (e) => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        const raw = ($input.val() || '').trim().replace(/^#+/, '');
+        $input.val('');
+        if (!raw || extra.csTags.includes(raw)) return;
+        extra.csTags.push(raw);
+        await persistChatTags();
+        renderChips();
+        syncTagButtonActiveState(mesId);
+    });
+
+    $('body').append($pop);
+    positionTagPopover($pop, $anchorBtn);
+    $input.trigger('focus');
+
+    setTimeout(() => {
+        $(document).on('click.csTagPopoverOutside', (ev) => {
+            if (!$(ev.target).closest('.cs-tag-popover, .cs-tag-msg-btn').length) {
+                closeTagPopover();
+            }
+        });
+    }, 0);
+}
+
+function addTagButtonToMessage(mesId) {
+    if (!getSettings().tagInsertEnabled) return;
+    const $mes = $(`.mes[mesid="${mesId}"]`);
+    if (!$mes.length) return;
+    // '...' (더보기) 버튼을 눌러야 펼쳐지는 숨은 버튼 영역에 붙임 -> 기본 버튼 줄이 안 지저분해짐
+    const $extraRow = $mes.find('.extraMesButtons');
+    if (!$extraRow.length || $extraRow.find('.cs-tag-msg-btn').length) return;
+
+    const extra = getMsgExtraForTags(Number(mesId));
+    const hasTags = !!(extra && extra.csTags.length);
+
+    const $btn = $(
+        `<div class="mes_button cs-tag-msg-btn fa-solid fa-hashtag ${hasTags ? 'cs-tag-msg-btn-active' : ''}" title="태그 달기" data-mesid="${mesId}"></div>`,
+    );
+    $extraRow.prepend($btn);
+}
+
+function removeAllTagButtons() {
+    $('.cs-tag-msg-btn').remove();
+    closeTagPopover();
+}
+
+function refreshAllMessageTagButtons() {
+    removeAllTagButtons();
+    if (!getSettings().tagInsertEnabled) return;
+    $('#chat .mes').each(function () {
+        const mesId = $(this).attr('mesid');
+        if (mesId !== undefined) addTagButtonToMessage(mesId);
+    });
+}
+
+function bindChatTagEvents() {
+    $(document).on('click', '.cs-tag-msg-btn', function (e) {
+        e.stopPropagation();
+        const mesId = Number($(this).data('mesid'));
+        openTagPopover($(this), mesId);
+    });
+
+    const context = SillyTavern.getContext();
+    if (!context.eventSource || !context.event_types) {
+        console.warn('[chat-searching] eventSource를 못 찾아서 메시지 태그 버튼 자동 부착이 제한될 수 있어.');
+        return;
+    }
+    const { eventSource, event_types } = context;
+    const onRendered = (mesId) => addTagButtonToMessage(mesId);
+    ['MESSAGE_RENDERED', 'USER_MESSAGE_RENDERED', 'CHARACTER_MESSAGE_RENDERED'].forEach((key) => {
+        if (event_types[key]) eventSource.on(event_types[key], onRendered);
+    });
+    if (event_types.CHAT_CHANGED) {
+        eventSource.on(event_types.CHAT_CHANGED, () => setTimeout(refreshAllMessageTagButtons, 50));
+    }
 }
 
 // ---------- 검색 로직 ----------
@@ -350,7 +513,165 @@ async function runSearch(query) {
     }
 }
 
+// ---------- 태그 수집 로직 (태그 클라우드 / 태그별 필터링) ----------
+
+// content 배열 하나에서 태그가 달린 메시지만 뽑아옴
+function collectTaggedMessages(content, meta) {
+    const rows = [];
+    for (let j = 0; j < content.length; j++) {
+        const msg = content[j];
+        if (!msg || typeof msg.mes !== 'string') continue;
+        const tags = Array.isArray(msg.extra?.csTags) ? msg.extra.csTags : [];
+        if (!tags.length) continue;
+        rows.push({
+            ...meta,
+            msgIndex: j,
+            name: msg.name,
+            isUser: msg.is_user,
+            isSystem: msg.is_system,
+            mes: msg.extra?.display_text || msg.mes,
+            tags,
+        });
+    }
+    return rows;
+}
+
+// [ [tag, count], ... ] 형태로 많이 쓰인 순 정렬
+function buildTagCounts(taggedRows) {
+    const counts = new Map();
+    for (const row of taggedRows) {
+        for (const tag of row.tags) {
+            counts.set(tag, (counts.get(tag) || 0) + 1);
+        }
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ko'));
+}
+
+function collectTaggedCurrentChat() {
+    const context = SillyTavern.getContext();
+    const charIndex = context.characterId;
+    if (charIndex === undefined || charIndex === null || !Array.isArray(context.chat)) return [];
+    const character = context.characters[charIndex];
+    return collectTaggedMessages(context.chat, {
+        fileName: context.chatId || '현재 채팅',
+        avatarUrl: character?.avatar,
+        charName: character?.name,
+    });
+}
+
+async function collectTaggedOneCharacterAllChats(character, $container, opts = {}) {
+    const avatarUrl = character.avatar;
+    const chName = character.name;
+
+    let chatList;
+    try {
+        chatList = await fetchChatList(avatarUrl);
+    } catch (err) {
+        console.error('[chat-searching] 채팅 목록 실패', err);
+        if (!opts.silentErrors) {
+            $container.html('<div class="cs-empty">채팅 목록을 못 불러왔어. 콘솔(F12) 확인해줘.</div>');
+        }
+        return [];
+    }
+
+    const rows = [];
+    for (let i = 0; i < chatList.length; i++) {
+        const fileName = chatList[i].file_name;
+        if (opts.onProgress) opts.onProgress(i + 1, chatList.length, fileName);
+
+        let content;
+        try {
+            content = await fetchChatContent(chName, avatarUrl, fileName);
+        } catch (err) {
+            console.warn(`[chat-searching] ${fileName} 스킵됨`, err);
+            continue;
+        }
+        rows.push(...collectTaggedMessages(content, { fileName, avatarUrl, charName: chName }));
+    }
+    return rows;
+}
+
+async function collectTaggedAllScope($container) {
+    const context = SillyTavern.getContext();
+    const characters = context.characters || [];
+    const rows = [];
+    for (let c = 0; c < characters.length; c++) {
+        const character = characters[c];
+        const found = await collectTaggedOneCharacterAllChats(character, $container, {
+            silentErrors: true,
+            onProgress: (i, total, fileName) => {
+                $container.html(
+                    `<div class="cs-loading">캐릭터 ${c + 1}/${characters.length} (${escapeHtml(character.name)})<br>` +
+                    `${i}/${total} 파일 확인 중... (${escapeHtml(fileName)})</div>`,
+                );
+            },
+        });
+        rows.push(...found);
+    }
+    return rows;
+}
+
+let currentTaggedRows = [];
+
+async function loadTagCloud() {
+    const scope = currentScope();
+    const $cloud = $('#cs-tag-cloud');
+    const $tagResults = $('#cs-tag-results');
+    $tagResults.empty();
+    $cloud.html('<div class="cs-loading">태그 불러오는 중...</div>');
+
+    let rows = [];
+    if (scope === 'current') {
+        rows = collectTaggedCurrentChat();
+    } else if (scope === 'character') {
+        const context = SillyTavern.getContext();
+        const avatarUrl = $('#cs-char-select').val();
+        const character = context.characters.find((c) => c.avatar === avatarUrl);
+        if (!character) {
+            $cloud.html('<div class="cs-empty">캐릭터를 선택해줘.</div>');
+            return;
+        }
+        rows = await collectTaggedOneCharacterAllChats(character, $cloud, {
+            onProgress: (i, total, fileName) => {
+                $cloud.html(`<div class="cs-loading">${i}/${total} 채팅 파일 확인 중...<br>(${escapeHtml(fileName)})</div>`);
+            },
+        });
+    } else {
+        rows = await collectTaggedAllScope($cloud);
+    }
+
+    currentTaggedRows = rows;
+    renderTagCloud(rows, scope === 'all');
+}
+
+function renderTagCloud(rows, showCharBadge) {
+    const $cloud = $('#cs-tag-cloud');
+    const counts = buildTagCounts(rows);
+    if (!counts.length) {
+        $cloud.html('<div class="cs-empty">이 범위엔 태그가 하나도 없어. 채팅 메시지 옆 # 버튼으로 태그를 달아봐.</div>');
+        return;
+    }
+    $cloud.empty();
+    for (const [tag, count] of counts) {
+        const $chip = $(
+            `<button type="button" class="cs-tag-chip">#${escapeHtml(tag)} <span class="cs-tag-count">${count}</span></button>`,
+        );
+        $chip.on('click', () => {
+            $('.cs-tag-chip').removeClass('active');
+            $chip.addClass('active');
+            const filtered = currentTaggedRows.filter((r) => r.tags.includes(tag));
+            renderResults($('#cs-tag-results'), filtered, '', { showCharBadge, tagMode: true });
+        });
+        $cloud.append($chip);
+    }
+}
+
 // ---------- 결과 렌더링 ----------
+
+function plainSnippet(text, radius = 160) {
+    const trimmed = text.length > radius ? `${text.slice(0, radius)}…` : text;
+    return escapeHtml(trimmed);
+}
 
 function renderResults($container, matches, query, opts = {}) {
     $container.empty();
@@ -367,6 +688,12 @@ function renderResults($container, matches, query, opts = {}) {
         const charChip = opts.showCharBadge && match.charName
             ? `<span class="cs-chip cs-chip-char">${escapeHtml(match.charName)}</span>`
             : '';
+        const tagChips = Array.isArray(match.tags)
+            ? match.tags.map((t) => `<span class="cs-chip cs-chip-tag">#${escapeHtml(t)}</span>`).join('')
+            : '';
+        const renderSnippet = () => (opts.tagMode ? plainSnippet(match.mes) : highlightSnippet(match.mes, query));
+        const renderFull = () => (opts.tagMode ? escapeHtml(match.mes) : highlightFull(match.mes, query));
+
         const $row = $(`
             <div class="cs-row">
                 <div class="cs-meta">
@@ -374,10 +701,11 @@ function renderResults($container, matches, query, opts = {}) {
                     <span class="cs-chip">${escapeHtml(String(match.fileName))}</span>
                     <span class="cs-chip">${roleChip}</span>
                     ${langChip}
+                    ${tagChips}
                     <span class="cs-name">${escapeHtml(match.name || '')}</span>
                     <div class="cs-star ${bookmarked ? 'cs-star-on' : ''}" title="북마크">${ICONS.star}</div>
                 </div>
-                <div class="cs-snippet">${highlightSnippet(match.mes, query)}</div>
+                <div class="cs-snippet">${renderSnippet()}</div>
                 <div class="cs-expand-hint">탭해서 전체 보기</div>
             </div>
         `);
@@ -391,10 +719,10 @@ function renderResults($container, matches, query, opts = {}) {
             if ($(e.target).closest('.cs-star').length) return; // 별 클릭은 아래에서 따로 처리
             expanded = !expanded;
             if (expanded) {
-                $snippet.html(highlightFull(match.mes, query));
+                $snippet.html(renderFull());
                 $hint.text('탭해서 접기');
             } else {
-                $snippet.html(highlightSnippet(match.mes, query));
+                $snippet.html(renderSnippet());
                 $hint.text('탭해서 전체 보기');
             }
         });
@@ -473,6 +801,34 @@ function renderBookmarksView() {
 
 // ---------- UI ----------
 
+let currentView = 'search'; // 'search' | 'bookmarks' | 'tags'
+
+function refreshTagInsertToggleUI() {
+    const enabled = getSettings().tagInsertEnabled;
+    $('#cs-tag-insert-state').text(enabled ? '켜짐' : '꺼짐');
+    $('#cs-tag-insert-toggle').toggleClass('cs-tag-toggle-on', enabled);
+}
+
+function setView(mode) {
+    currentView = mode;
+    $('#cs-results').toggle(mode === 'search');
+    $('#cs-bookmarks-view').toggle(mode === 'bookmarks');
+    $('#cs-tags-view').toggle(mode === 'tags');
+
+    $('.cs-searchbar').toggle(mode === 'search');
+    $('.cs-scope-bar').toggle(mode === 'search' || mode === 'tags');
+    $('.cs-divider').toggle(mode !== 'bookmarks');
+
+    $('#cs-bookmarks-btn').toggleClass('cs-icon-btn-active', mode === 'bookmarks');
+    $('#cs-tags-btn').toggleClass('cs-icon-btn-active', mode === 'tags');
+
+    if (mode === 'bookmarks') renderBookmarksView();
+    if (mode === 'tags') {
+        refreshTagInsertToggleUI();
+        loadTagCloud();
+    }
+}
+
 function populateCharacterSelect() {
     const context = SillyTavern.getContext();
     const $select = $('#cs-char-select');
@@ -509,6 +865,7 @@ function buildUI() {
                     </div>
                     <div class="cs-header-actions">
                         <div id="cs-theme-btn" class="cs-icon-btn" title="테마 전환"></div>
+                        <div id="cs-tags-btn" class="cs-icon-btn" title="태그 보기">${ICONS.tag}</div>
                         <div id="cs-bookmarks-btn" class="cs-icon-btn" title="북마크 보기">${ICONS.bookmark}</div>
                         <div id="cs-close" class="cs-icon-btn" title="닫기">${ICONS.close}</div>
                     </div>
@@ -538,6 +895,15 @@ function buildUI() {
 
                 <div id="cs-results" class="cs-results"></div>
                 <div id="cs-bookmarks-view" class="cs-results" style="display:none;"></div>
+                <div id="cs-tags-view" style="display:none;">
+                    <div class="cs-tag-toolbar">
+                        <button id="cs-tag-insert-toggle" type="button" class="cs-tag-toggle-btn">
+                            채팅에 태그 버튼 표시: <span id="cs-tag-insert-state"></span>
+                        </button>
+                    </div>
+                    <div id="cs-tag-cloud" class="cs-tag-cloud"></div>
+                    <div id="cs-tag-results" class="cs-results"></div>
+                </div>
             </div>
         </div>
     `;
@@ -568,22 +934,27 @@ function buildUI() {
         $('.cs-segment button').removeClass('active');
         $(this).addClass('active');
         updateScopeUI();
+        if (currentView === 'tags') loadTagCloud();
+    });
+
+    $('#cs-char-select').on('change', () => {
+        if (currentView === 'tags' && currentScope() === 'character') loadTagCloud();
     });
 
     $('#cs-bookmarks-btn').on('click', () => {
-        const showingBookmarks = $('#cs-bookmarks-view').is(':visible');
-        if (showingBookmarks) {
-            $('#cs-bookmarks-view').hide();
-            $('#cs-results').show();
-            $('.cs-scope-bar, .cs-searchbar, .cs-divider').show();
-            $('#cs-bookmarks-btn').removeClass('cs-icon-btn-active');
-        } else {
-            renderBookmarksView();
-            $('#cs-results').hide();
-            $('.cs-scope-bar, .cs-searchbar, .cs-divider').hide();
-            $('#cs-bookmarks-view').show();
-            $('#cs-bookmarks-btn').addClass('cs-icon-btn-active');
-        }
+        setView(currentView === 'bookmarks' ? 'search' : 'bookmarks');
+    });
+
+    $('#cs-tags-btn').on('click', () => {
+        setView(currentView === 'tags' ? 'search' : 'tags');
+    });
+
+    $('#cs-tag-insert-toggle').on('click', () => {
+        const settings = getSettings();
+        settings.tagInsertEnabled = !settings.tagInsertEnabled;
+        persistSettings();
+        refreshTagInsertToggleUI();
+        refreshAllMessageTagButtons();
     });
 
     // 확장 메뉴(퍼즐 아이콘 드롭다운)에 진입 버튼 추가
@@ -603,13 +974,10 @@ function openModal() {
     // 배경 스크롤 잠그기 (모바일에서 팝업 열릴 때 화면 밀리는 현상 방지)
     $('body').css('overflow', 'hidden');
 
-    // 열 때마다 캐릭터 목록/기본 선택 최신화 + 북마크 보기는 닫고 검색 화면으로 리셋
+    // 열 때마다 캐릭터 목록/기본 선택 최신화 + 항상 검색 화면으로 리셋
     populateCharacterSelect();
     updateScopeUI();
-    $('#cs-bookmarks-view').hide();
-    $('#cs-results').show();
-    $('.cs-scope-bar, .cs-searchbar, .cs-divider').show();
-    $('#cs-bookmarks-btn').removeClass('cs-icon-btn-active');
+    setView('search');
 
     $('#cs-modal').show();
     // 자동 포커스는 일부러 안 함 -> 열리자마자 키보드가 뜨면서
@@ -624,5 +992,7 @@ function closeModal() {
 jQuery(async () => {
     migrateLegacyLocalStorage();
     buildUI();
-    console.log('[chat-searching] 로드됨 (v4: PC 팝업 레이아웃 + 서버 저장 동기화)');
+    bindChatTagEvents();
+    refreshAllMessageTagButtons();
+    console.log('[chat-searching] 로드됨 (v5: PC 팝업 레이아웃 + 서버 저장 동기화 + 메시지 해시태그)');
 });
