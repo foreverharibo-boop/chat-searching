@@ -239,18 +239,47 @@ function syncTagButtonActiveState(mesId) {
     $(`.cs-tag-msg-btn[data-mesid="${mesId}"]`).toggleClass('cs-tag-msg-btn-active', !!(extra && extra.csTags.length));
 }
 
+let tagPopoverCleanup = null;
+
 function closeTagPopover() {
     $('.cs-tag-popover').remove();
     $(document).off('click.csTagPopoverOutside');
+    if (tagPopoverCleanup) {
+        tagPopoverCleanup();
+        tagPopoverCleanup = null;
+    }
 }
 
 function positionTagPopover($pop, $anchorBtn) {
-    const offset = $anchorBtn.offset();
-    if (!offset) return;
-    const top = offset.top + $anchorBtn.outerHeight() + 4;
-    let left = offset.left - 100;
-    left = Math.max(8, Math.min(left, $(window).width() - 236));
-    $pop.css({ position: 'absolute', top, left, zIndex: 2147483647 });
+    const btnEl = $anchorBtn.get(0);
+    if (!btnEl) return;
+    const rect = btnEl.getBoundingClientRect();
+    // visualViewport를 쓰면 모바일에서 키보드가 떠서 화면이 줄어든 상태도 반영됨
+    const vv = window.visualViewport;
+    const viewportHeight = vv ? vv.height : window.innerHeight;
+    const viewportWidth = vv ? vv.width : window.innerWidth;
+    const vvOffsetTop = vv ? vv.offsetTop : 0;
+    const vvOffsetLeft = vv ? vv.offsetLeft : 0;
+
+    // 일단 화면 밖에 그려서 실제 크기를 잰 다음, 화면(=키보드 위 보이는 영역) 안에 들어오게 좌표 계산
+    $pop.css({ position: 'fixed', top: '-9999px', left: '-9999px', visibility: 'hidden', display: 'block', zIndex: 2147483647 });
+    const popHeight = $pop.outerHeight();
+    const popWidth = $pop.outerWidth();
+
+    const viewportBottom = vvOffsetTop + viewportHeight;
+    const viewportRight = vvOffsetLeft + viewportWidth;
+
+    let top = rect.bottom + 4;
+    if (top + popHeight > viewportBottom - 8) {
+        // 아래에 공간이 부족하면 버튼 위쪽으로 띄움
+        top = rect.top - popHeight - 4;
+    }
+    top = Math.max(vvOffsetTop + 8, Math.min(top, viewportBottom - popHeight - 8));
+
+    let left = rect.left - 100;
+    left = Math.max(vvOffsetLeft + 8, Math.min(left, viewportRight - popWidth - 8));
+
+    $pop.css({ top, left, visibility: 'visible' });
 }
 
 function openTagPopover($anchorBtn, mesId) {
@@ -300,9 +329,22 @@ function openTagPopover($anchorBtn, mesId) {
         syncTagButtonActiveState(mesId);
     });
 
-    $('body').append($pop);
+    // body가 아니라 html 바로 아래에 붙임 (모달과 동일한 이유: 모바일에서
+    // body에 걸리는 transform/zoom의 영향권 밖에서 position:fixed가 화면 기준으로 계산되게 함)
+    document.documentElement.appendChild($pop.get(0));
     positionTagPopover($pop, $anchorBtn);
     $input.trigger('focus');
+
+    // 키보드가 뜨거나 접히면(visualViewport 크기 변화) 팝오버 위치도 다시 계산
+    if (window.visualViewport) {
+        const reposition = () => positionTagPopover($pop, $anchorBtn);
+        window.visualViewport.addEventListener('resize', reposition);
+        window.visualViewport.addEventListener('scroll', reposition);
+        tagPopoverCleanup = () => {
+            window.visualViewport.removeEventListener('resize', reposition);
+            window.visualViewport.removeEventListener('scroll', reposition);
+        };
+    }
 
     setTimeout(() => {
         $(document).on('click.csTagPopoverOutside', (ev) => {
@@ -588,6 +630,24 @@ function collectTaggedCurrentChat() {
     });
 }
 
+// 현재 열려있는 채팅 파일이면 서버에서 다시 안 긁어오고 메모리에 있는
+// 실시간 데이터(context.chat)를 그대로 씀 -> 저장 직후에도 항상 최신 상태 반영
+function isCurrentlyOpenChatFile(avatarUrl, fileName) {
+    const context = SillyTavern.getContext();
+    const charIndex = context.characterId;
+    const currentAvatarUrl = (charIndex !== undefined && charIndex !== null)
+        ? context.characters[charIndex]?.avatar
+        : null;
+    return avatarUrl === currentAvatarUrl && fileName === context.chatId;
+}
+
+async function getChatContentPreferLive(chName, avatarUrl, fileName) {
+    if (isCurrentlyOpenChatFile(avatarUrl, fileName)) {
+        return SillyTavern.getContext().chat;
+    }
+    return fetchChatContent(chName, avatarUrl, fileName);
+}
+
 async function collectTaggedOneCharacterAllChats(character, $container, opts = {}) {
     const avatarUrl = character.avatar;
     const chName = character.name;
@@ -610,7 +670,7 @@ async function collectTaggedOneCharacterAllChats(character, $container, opts = {
 
         let content;
         try {
-            content = await fetchChatContent(chName, avatarUrl, fileName);
+            content = await getChatContentPreferLive(chName, avatarUrl, fileName);
         } catch (err) {
             console.warn(`[chat-searching] ${fileName} 스킵됨`, err);
             continue;
