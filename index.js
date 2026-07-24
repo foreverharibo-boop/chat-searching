@@ -864,6 +864,9 @@ function renderResults($container, matches, query, opts = {}) {
         const id = makeBookmarkId(match);
         const bookmarked = isBookmarked(id);
         const roleChip = match.isSystem ? '👻 숨김' : (match.isUser ? '🧑 유저' : '🤖 AI');
+        const msgNoChip = typeof match.msgIndex === 'number'
+            ? `<span class="cs-chip">#${match.msgIndex}</span>`
+            : '';
         const langChip = match.matchedTranslated ? '<span class="cs-chip">🌐 번역본</span>' : '';
         const charChip = opts.showCharBadge && match.charName
             ? `<span class="cs-chip cs-chip-char">${escapeHtml(match.charName)}</span>`
@@ -879,6 +882,7 @@ function renderResults($container, matches, query, opts = {}) {
                 <div class="cs-meta">
                     ${charChip}
                     <span class="cs-chip">${escapeHtml(String(match.fileName))}</span>
+                    ${msgNoChip}
                     <span class="cs-chip">${roleChip}</span>
                     ${langChip}
                     ${tagChips}
@@ -934,12 +938,14 @@ function renderBookmarksView() {
 
     for (const b of bookmarks) {
         const roleChip = b.isSystem ? '👻 숨김' : (b.isUser ? '🧑 유저' : '🤖 AI');
+        const msgNoChip = typeof b.msgIndex === 'number' ? `<span class="cs-chip">#${b.msgIndex}</span>` : '';
         const charChip = b.charName ? `<span class="cs-chip cs-chip-char">${escapeHtml(b.charName)}</span>` : '';
         const $row = $(`
             <div class="cs-row">
                 <div class="cs-meta">
                     ${charChip}
                     <span class="cs-chip">${escapeHtml(String(b.fileName))}</span>
+                    ${msgNoChip}
                     <span class="cs-chip">${roleChip}</span>
                     <span class="cs-name">${escapeHtml(b.name || '')}</span>
                     <div class="cs-star cs-star-on" title="북마크 해제">${ICONS.star}</div>
