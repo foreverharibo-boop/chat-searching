@@ -19,6 +19,7 @@ const ICONS = {
     sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
     moon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z"/></svg>',
     tag: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9h16M4 15h16M10 3 7 21M17 3l-3 18"/></svg>',
+    jump: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h13"/><path d="m12 5 7 7-7 7"/></svg>',
 };
 
 function getRequestHeadersSafe() {
@@ -639,7 +640,8 @@ function isCurrentlyOpenChatFile(avatarUrl, fileName) {
     const currentAvatarUrl = (charIndex !== undefined && charIndex !== null)
         ? context.characters[charIndex]?.avatar
         : null;
-    return avatarUrl === currentAvatarUrl && fileName === context.chatId;
+    // 서버 채팅 목록의 file_name엔 .jsonl이 붙어있고 context.chatId엔 없어서 양쪽 다 떼고 비교
+    return avatarUrl === currentAvatarUrl && normalizeChatFileName(fileName) === normalizeChatFileName(context.chatId);
 }
 
 async function getChatContentPreferLive(chName, avatarUrl, fileName) {
@@ -846,6 +848,80 @@ async function bulkDeleteTag(tag) {
     renderTagCloud(rowsInCurrentScope(currentTaggedRows), currentScope() === 'all');
 }
 
+// ---------- 메시지로 바로 이동 (점프) ----------
+// ST 내장 /chat-jump와 동일한 동작: 스크롤 밖(미렌더링)이든 숨김(is_system)이든
+// 해당 채팅번호로 스크롤 + 하이라이트. 다른 캐릭터/다른 채팅 파일의 결과면
+// 먼저 그 캐릭터/채팅을 열고 나서 점프함.
+
+function normalizeChatFileName(fileName) {
+    return String(fileName ?? '').replace(/\.jsonl$/, '');
+}
+
+// /chat-jump 명령이 있는 버전이면 그대로 활용 (미렌더링 메시지 로딩까지 내장돼 있음)
+async function scrollChatToMessage(msgIndex) {
+    const context = SillyTavern.getContext();
+    const hasChatJump = !!context.SlashCommandParser?.commands?.['chat-jump'];
+    if (hasChatJump && typeof context.executeSlashCommandsWithOptions === 'function') {
+        await context.executeSlashCommandsWithOptions(`/chat-jump ${msgIndex}`);
+        return;
+    }
+
+    // 폴백: /chat-jump가 없는 옛 버전 - "더 보기"를 눌러가며 직접 렌더링시킨 후 스크롤
+    let $mes = $(`#chat .mes[mesid="${msgIndex}"]`);
+    let guard = 0;
+    while (!$mes.length && $('#show_more_messages').length && guard++ < 300) {
+        $('#show_more_messages').trigger('click');
+        await new Promise((r) => setTimeout(r, 60));
+        $mes = $(`#chat .mes[mesid="${msgIndex}"]`);
+    }
+    const mesEl = $mes.get(0);
+    const chatEl = document.getElementById('chat');
+    if (!mesEl || !chatEl) {
+        window.toastr?.warning?.(`#${msgIndex} 메시지를 화면에서 찾지 못했어.`);
+        return;
+    }
+    const top = mesEl.getBoundingClientRect().top - chatEl.getBoundingClientRect().top + chatEl.scrollTop;
+    chatEl.scrollTo({ top, behavior: 'smooth' });
+    $mes.addClass('flash animated');
+    setTimeout(() => $mes.removeClass('flash animated'), 2000);
+}
+
+async function jumpToMessage(target) {
+    const context = SillyTavern.getContext();
+    if (typeof target.msgIndex !== 'number') return;
+
+    const targetFile = normalizeChatFileName(target.fileName);
+
+    const charIndex = context.characters.findIndex((c) => c.avatar === target.avatarUrl);
+    if (charIndex === -1) {
+        window.toastr?.warning?.('이 결과의 캐릭터를 찾을 수 없어. (삭제됐거나 아바타가 바뀐 듯)');
+        return;
+    }
+
+    closeModal();
+
+    try {
+        // 1) 다른 캐릭터(또는 그룹챗이 열려있는 상태)면 캐릭터부터 전환
+        const isSameChar = !context.groupId && String(context.characterId) === String(charIndex);
+        if (!isSameChar) {
+            await context.selectCharacterById(charIndex);
+        }
+
+        // 2) 지금 열린 채팅 파일이 아니면 해당 채팅 파일 열기
+        const fresh = SillyTavern.getContext();
+        if (targetFile && normalizeChatFileName(fresh.chatId) !== targetFile) {
+            await fresh.openCharacterChat(targetFile);
+        }
+
+        // 3) 렌더링 정리될 틈 주고 점프
+        await new Promise((r) => setTimeout(r, 100));
+        await scrollChatToMessage(target.msgIndex);
+    } catch (err) {
+        console.error('[chat-searching] 메시지 이동 실패', err);
+        window.toastr?.error?.('메시지로 이동하다가 문제가 생겼어. 콘솔(F12)을 확인해줘.');
+    }
+}
+
 // ---------- 결과 렌더링 ----------
 
 function plainSnippet(text, radius = 160) {
@@ -887,6 +963,7 @@ function renderResults($container, matches, query, opts = {}) {
                     ${langChip}
                     ${tagChips}
                     <span class="cs-name">${escapeHtml(match.name || '')}</span>
+                    <div class="cs-jump" title="이 메시지로 이동">${ICONS.jump}</div>
                     <div class="cs-star ${bookmarked ? 'cs-star-on' : ''}" title="북마크">${ICONS.star}</div>
                 </div>
                 <div class="cs-snippet">${renderSnippet()}</div>
@@ -900,7 +977,7 @@ function renderResults($container, matches, query, opts = {}) {
         const $star = $row.find('.cs-star');
 
         $row.on('click', (e) => {
-            if ($(e.target).closest('.cs-star').length) return; // 별 클릭은 아래에서 따로 처리
+            if ($(e.target).closest('.cs-star, .cs-jump').length) return; // 별/이동 클릭은 아래에서 따로 처리
             expanded = !expanded;
             if (expanded) {
                 $snippet.html(renderFull());
@@ -920,6 +997,11 @@ function renderResults($container, matches, query, opts = {}) {
                 addBookmark({ id, ...match, query });
                 $star.addClass('cs-star-on');
             }
+        });
+
+        $row.find('.cs-jump').on('click', (e) => {
+            e.stopPropagation();
+            jumpToMessage(match);
         });
 
         $container.append($row);
@@ -948,6 +1030,7 @@ function renderBookmarksView() {
                     ${msgNoChip}
                     <span class="cs-chip">${roleChip}</span>
                     <span class="cs-name">${escapeHtml(b.name || '')}</span>
+                    <div class="cs-jump" title="이 메시지로 이동">${ICONS.jump}</div>
                     <div class="cs-star cs-star-on" title="북마크 해제">${ICONS.star}</div>
                 </div>
                 <div class="cs-snippet">${b.query ? highlightSnippet(b.mes, b.query) : escapeHtml(b.mes.slice(0, 160))}</div>
@@ -961,7 +1044,7 @@ function renderBookmarksView() {
         const $star = $row.find('.cs-star');
 
         $row.on('click', (e) => {
-            if ($(e.target).closest('.cs-star').length) return;
+            if ($(e.target).closest('.cs-star, .cs-jump').length) return;
             expanded = !expanded;
             if (expanded) {
                 $snippet.html(b.query ? highlightFull(b.mes, b.query) : escapeHtml(b.mes));
@@ -979,6 +1062,11 @@ function renderBookmarksView() {
             if (!loadBookmarks().length) {
                 $view.html('<div class="cs-empty">저장한 북마크가 없어.</div>');
             }
+        });
+
+        $row.find('.cs-jump').on('click', (e) => {
+            e.stopPropagation();
+            jumpToMessage(b);
         });
 
         $view.append($row);
@@ -1180,5 +1268,5 @@ jQuery(async () => {
     buildUI();
     bindChatTagEvents();
     refreshAllMessageTagButtons();
-    console.log('[chat-searching] 로드됨 (v5: PC 팝업 레이아웃 + 서버 저장 동기화 + 메시지 해시태그)');
+    console.log('[chat-searching] 로드됨 (v6: 검색 결과에서 메시지로 바로 이동)');
 });

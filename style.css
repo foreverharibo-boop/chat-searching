@@ -338,6 +338,35 @@
     margin-left: 2px;
 }
 
+.cs-jump {
+    margin-left: auto;
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-faint);
+    cursor: pointer;
+    flex-shrink: 0;
+    border-radius: 8px;
+    transition: background .15s ease, color .15s ease;
+}
+
+.cs-jump:hover {
+    background: var(--accent-soft);
+    color: var(--accent);
+}
+
+.cs-jump svg {
+    width: 16px;
+    height: 16px;
+}
+
+/* 이동 버튼이 앞에 있으면 별은 바로 옆에 붙음 (이동 버튼이 없을 땐 별이 오른쪽 정렬 유지) */
+.cs-jump + .cs-star {
+    margin-left: 0;
+}
+
 .cs-star {
     margin-left: auto;
     width: 30px;
