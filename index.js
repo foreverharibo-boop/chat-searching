@@ -425,13 +425,22 @@ function bindChatTagEvents() {
 
 // ---------- 검색 로직 ----------
 
-// content 배열(원본 채팅 메시지 배열) 하나를 대상으로 검색해서 매칭된 항목들 리턴
-function matchInContent(content, query, meta) {
+// ST는 채팅 파일을 불러올 때 내용이 뭐든 상관없이 "무조건" 첫 줄을 헤더로 보고
+// 잘라냄(getChat()의 data.shift()). 그래서 서버에서 받은 파일 배열은 언제나
+// "파일 인덱스 - 1 = 화면의 mesid"가 성립함. 첫 줄이 정상 헤더가 아닌 특이한
+// 파일이어도 ST가 똑같이 한 줄을 버리기 때문에, 추측하지 말고 고정으로 1을 빼야
+// 화면 번호와 정확히 일치함. (현재 열린 채팅의 context.chat은 헤더가 없으므로 0)
+const FILE_HEADER_LINES = 1;
+
+// content 배열 하나를 대상으로 검색해서 매칭된 항목들 리턴
+// headerOffset: 서버에서 받은 파일 내용이면 FILE_HEADER_LINES, 메모리(context.chat)면 0
+function matchInContent(content, query, meta, headerOffset = 0) {
     const matches = [];
     const lowerQuery = query.toLowerCase();
-    for (let j = 0; j < content.length; j++) {
+    // 헤더로 잘려나갈 줄은 화면에 아예 존재하지 않으므로 검색 대상에서도 제외
+    for (let j = headerOffset; j < content.length; j++) {
         const msg = content[j];
-        if (!msg || typeof msg.mes !== 'string') continue; // 0번 메타데이터 라인 등 스킵
+        if (!msg || typeof msg.mes !== 'string') continue; // 메시지 아닌 라인 스킵
 
         const original = msg.mes;
         // ST 번역 확장은 원문(mes.mes)은 그대로 두고
@@ -444,7 +453,7 @@ function matchInContent(content, query, meta) {
         if (matchedOriginal || matchedTranslated) {
             matches.push({
                 ...meta,
-                msgIndex: j,
+                msgIndex: j - headerOffset, // 화면의 mesid와 동일한 번호
                 name: msg.name,
                 isUser: msg.is_user,
                 isSystem: msg.is_system,
@@ -502,14 +511,17 @@ async function searchOneCharacterAllChats(query, character, $results, opts = {})
         const fileName = chatList[i].file_name;
         if (opts.onProgress) opts.onProgress(i + 1, chatList.length, fileName);
 
+        // 현재 열린 채팅 파일이면 화면과 동일한 메모리 데이터(헤더 없음, 최신 상태)를 쓰고,
+        // 아니면 서버 파일(첫 줄 = 헤더)을 받아와서 오프셋 1을 적용
+        const isOpen = isCurrentlyOpenChatFile(avatarUrl, fileName);
         let content;
         try {
-            content = await fetchChatContent(chName, avatarUrl, fileName);
+            content = await getChatContentPreferLive(chName, avatarUrl, fileName);
         } catch (err) {
             console.warn(`[chat-searching] ${fileName} 스킵됨`, err);
             continue;
         }
-        allMatches.push(...matchInContent(content, query, { fileName, avatarUrl, charName: chName }));
+        allMatches.push(...matchInContent(content, query, { fileName, avatarUrl, charName: chName }, isOpen ? 0 : FILE_HEADER_LINES));
     }
     return allMatches;
 }
@@ -588,16 +600,17 @@ async function runSearch(query) {
 // ---------- 태그 수집 로직 (태그 클라우드 / 태그별 필터링) ----------
 
 // content 배열 하나에서 태그가 달린 메시지만 뽑아옴
-function collectTaggedMessages(content, meta) {
+// headerOffset: 서버에서 받은 파일 내용이면 FILE_HEADER_LINES, 메모리(context.chat)면 0
+function collectTaggedMessages(content, meta, headerOffset = 0) {
     const rows = [];
-    for (let j = 0; j < content.length; j++) {
+    for (let j = headerOffset; j < content.length; j++) {
         const msg = content[j];
         if (!msg || typeof msg.mes !== 'string') continue;
         const tags = Array.isArray(msg.extra?.csTags) ? msg.extra.csTags : [];
         if (!tags.length) continue;
         rows.push({
             ...meta,
-            msgIndex: j,
+            msgIndex: j - headerOffset, // 화면의 mesid와 동일한 번호
             name: msg.name,
             isUser: msg.is_user,
             isSystem: msg.is_system,
@@ -678,12 +691,13 @@ async function collectTaggedOneCharacterAllChats(character, $container, opts = {
             console.warn(`[chat-searching] ${fileName} 스킵됨`, err);
             continue;
         }
+        const isOpen = isCurrentlyOpenChatFile(avatarUrl, fileName);
         rows.push(...collectTaggedMessages(content, {
             fileName,
             avatarUrl,
             charName: chName,
-            isOpenChat: isCurrentlyOpenChatFile(avatarUrl, fileName),
-        }));
+            isOpenChat: isOpen,
+        }, isOpen ? 0 : FILE_HEADER_LINES));
     }
     return rows;
 }
@@ -826,9 +840,11 @@ async function bulkDeleteTag(tag) {
                 refreshAllMessageTagButtons();
             } else {
                 const content = await fetchChatContent(charName, avatarUrl, fileName);
+                // msgIndex는 화면 기준(mesid)이라 파일 배열로 접근할 땐 헤더 줄(1)만큼 다시 더해줌
                 for (const idx of msgIndexes) {
-                    if (content[idx]?.extra?.csTags) {
-                        content[idx].extra.csTags = content[idx].extra.csTags.filter((t) => t !== tag);
+                    const fileIdx = idx + FILE_HEADER_LINES;
+                    if (content[fileIdx]?.extra?.csTags) {
+                        content[fileIdx].extra.csTags = content[fileIdx].extra.csTags.filter((t) => t !== tag);
                     }
                 }
                 await saveChatContentToFile(avatarUrl, fileName, content);
@@ -1268,5 +1284,5 @@ jQuery(async () => {
     buildUI();
     bindChatTagEvents();
     refreshAllMessageTagButtons();
-    console.log('[chat-searching] 로드됨 (v6: 검색 결과에서 메시지로 바로 이동)');
+    console.log('[chat-searching] 로드됨 (v6.2: 메시지 번호를 ST와 동일하게 고정 계산 - 파일은 무조건 첫 줄 제외)');
 });
