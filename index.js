@@ -377,7 +377,7 @@ function addTagButtonToMessage(mesId) {
     const $mes = $(`#chat .mes[mesid="${mesId}"]`).first();
     if (!$mes.length) return;
     const $btnRow = $mes.find('.mes_buttons').first();
-    const $extraButtons = $btnRow.children('.extraMesButtons').first();
+    const $extraButtons = $btnRow.find('.extraMesButtons').first();
     if (!$btnRow.length || !$extraButtons.length || $btnRow.find('.cs-tag-msg-btn').length) return;
 
     const extra = getMsgExtraForTags(Number(mesId));
@@ -386,9 +386,15 @@ function addTagButtonToMessage(mesId) {
     const $btn = $(
         `<div class="mes_button cs-tag-msg-btn fa-solid fa-hashtag ${hasTags ? 'cs-tag-msg-btn-active' : ''}" title="태그 달기" data-mesid="${mesId}"></div>`,
     );
-    // 실리태번의 실제 "..." 메뉴 컨테이너 안에 넣는다. 메뉴 열기/닫기는
-    // ST 자체 동작을 그대로 따르므로 버튼만 따로 화면에 남지 않는다.
-    $extraButtons.prepend($btn);
+    // 실리태번의 실제 "..." 메뉴 컨테이너 안에 넣는다. 모바일에서 액션이
+    // 많으면 왼쪽 항목부터 overflow로 잘리므로, 맨 앞이 아니라 항상 보이는
+    // 오른쪽 끝의 복사 버튼 바로 앞에 둔다.
+    const $copyButton = $extraButtons.find('.mes_copy').first();
+    if ($copyButton.length) {
+        $btn.insertBefore($copyButton);
+    } else {
+        $extraButtons.append($btn);
+    }
 }
 
 function removeAllTagButtons() {
@@ -1288,5 +1294,5 @@ jQuery(async () => {
     buildUI();
     bindChatTagEvents();
     refreshAllMessageTagButtons();
-    console.log('[chat-searching] 로드됨 (v6.3: 하이드 메시지 태그 저장 및 메시지 액션 메뉴 위치 수정)');
+    console.log('[chat-searching] 로드됨 (v6.4: 모바일 액션 메뉴에서 태그 버튼 잘림 방지)');
 });
