@@ -411,6 +411,60 @@ function refreshAllMessageTagButtons() {
     });
 }
 
+// 하이드(is_system) 메시지는 채팅을 처음 열 때 일반 메시지 렌더 이벤트가
+// 누락되거나, 버튼 영역이 이벤트보다 늦게 DOM에 붙는 경우가 있다.
+// ST 이벤트만 믿지 않고 실제 #chat DOM을 감시해서 뒤늦게 생긴 메시지에도
+// 태그 버튼을 보장한다. 버튼을 추가해서 생긴 mutation은 기존 버튼 검사에서
+// 즉시 끝나므로 중복 생성되지 않는다.
+let tagButtonObserver = null;
+let tagButtonObserverFrame = 0;
+
+function ensureAllMessageTagButtons() {
+    if (!getSettings().tagInsertEnabled) return;
+    $('#chat .mes').each(function () {
+        const mesId = $(this).attr('mesid');
+        if (mesId !== undefined) addTagButtonToMessage(mesId);
+    });
+}
+
+function scheduleEnsureAllMessageTagButtons() {
+    if (tagButtonObserverFrame) return;
+    tagButtonObserverFrame = requestAnimationFrame(() => {
+        tagButtonObserverFrame = 0;
+        ensureAllMessageTagButtons();
+    });
+}
+
+function observeChatForTagButtons() {
+    tagButtonObserver?.disconnect();
+    tagButtonObserver = null;
+
+    const chatElement = document.getElementById('chat');
+    if (!chatElement) return;
+
+    tagButtonObserver = new MutationObserver((mutations) => {
+        const needsCheck = mutations.some((mutation) => {
+            if (mutation.type === 'attributes') return true;
+            if (mutation.type !== 'childList' || !mutation.addedNodes.length) return false;
+
+            return [...mutation.addedNodes].some((node) => {
+                if (!(node instanceof Element)) return false;
+                return node.matches('.mes, .mes_buttons, .extraMesButtons')
+                    || !!node.querySelector('.mes, .mes_buttons, .extraMesButtons');
+            });
+        });
+
+        if (needsCheck) scheduleEnsureAllMessageTagButtons();
+    });
+
+    tagButtonObserver.observe(chatElement, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['mesid', 'is_system'],
+    });
+}
+
 function bindChatTagEvents() {
     $(document).on('click', '.cs-tag-msg-btn', function (e) {
         e.stopPropagation();
@@ -1293,6 +1347,7 @@ jQuery(async () => {
     migrateLegacyLocalStorage();
     buildUI();
     bindChatTagEvents();
+    observeChatForTagButtons();
     refreshAllMessageTagButtons();
-    console.log('[chat-searching] 로드됨 (v6.4: 모바일 액션 메뉴에서 태그 버튼 잘림 방지)');
+    console.log('[chat-searching] 로드됨 (v1.0.3: 하이드 메시지 태그 버튼 누락 방지)');
 });
