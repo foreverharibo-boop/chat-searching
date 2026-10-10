@@ -235,6 +235,23 @@ async function persistChatTags() {
     }
 }
 
+function getMessageTags(mesId) {
+    const extra = getMsgExtraForTags(mesId);
+    return extra ? extra.csTags : [];
+}
+
+async function replaceMessageTags(mesId, tags) {
+    // 팝오버를 연 뒤 메시지가 숨김/해제되거나 다시 렌더링돼도 예전 객체를
+    // 붙잡지 않고, 저장 직전에 현재 context.chat의 원본 메시지를 다시 찾는다.
+    // is_system(하이드) 메시지도 일부러 제외하지 않는다.
+    const extra = getMsgExtraForTags(mesId);
+    if (!extra) return false;
+
+    extra.csTags = [...new Set(tags)];
+    await persistChatTags();
+    return true;
+}
+
 function syncTagButtonActiveState(mesId) {
     const extra = getMsgExtraForTags(mesId);
     $(`.cs-tag-msg-btn[data-mesid="${mesId}"]`).toggleClass('cs-tag-msg-btn-active', !!(extra && extra.csTags.length));
@@ -285,8 +302,7 @@ function positionTagPopover($pop, $anchorBtn) {
 
 function openTagPopover($anchorBtn, mesId) {
     closeTagPopover();
-    const extra = getMsgExtraForTags(mesId);
-    if (!extra) return;
+    if (!getMsgExtraForTags(mesId)) return;
 
     const $pop = $(`
         <div class="cs-tag-popover cs-theme-${getSavedTheme()}">
@@ -300,15 +316,15 @@ function openTagPopover($anchorBtn, mesId) {
     const renderChips = () => {
         const $chips = $pop.find('.cs-tag-popover-chips');
         $chips.empty();
-        if (!extra.csTags.length) {
+        const tags = getMessageTags(mesId);
+        if (!tags.length) {
             $chips.append('<span class="cs-tag-popover-empty">아직 태그 없음</span>');
             return;
         }
-        for (const tag of extra.csTags) {
+        for (const tag of tags) {
             const $chip = $(`<span class="cs-tag-popover-chip">#${escapeHtml(tag)} <b class="cs-tag-popover-x">×</b></span>`);
             $chip.find('.cs-tag-popover-x').on('click', async () => {
-                extra.csTags = extra.csTags.filter((t) => t !== tag);
-                await persistChatTags();
+                await replaceMessageTags(mesId, getMessageTags(mesId).filter((t) => t !== tag));
                 renderChips();
                 syncTagButtonActiveState(mesId);
             });
@@ -323,9 +339,9 @@ function openTagPopover($anchorBtn, mesId) {
         e.preventDefault();
         const raw = ($input.val() || '').trim().replace(/^#+/, '');
         $input.val('');
-        if (!raw || extra.csTags.includes(raw)) return;
-        extra.csTags.push(raw);
-        await persistChatTags();
+        const tags = getMessageTags(mesId);
+        if (!raw || tags.includes(raw)) return;
+        await replaceMessageTags(mesId, [...tags, raw]);
         renderChips();
         syncTagButtonActiveState(mesId);
     });
@@ -358,10 +374,11 @@ function openTagPopover($anchorBtn, mesId) {
 
 function addTagButtonToMessage(mesId) {
     if (!getSettings().tagInsertEnabled) return;
-    const $mes = $(`.mes[mesid="${mesId}"]`);
+    const $mes = $(`#chat .mes[mesid="${mesId}"]`).first();
     if (!$mes.length) return;
-    const $btnRow = $mes.find('.mes_buttons');
-    if (!$btnRow.length || $btnRow.find('.cs-tag-msg-btn').length) return;
+    const $btnRow = $mes.find('.mes_buttons').first();
+    const $extraButtons = $btnRow.children('.extraMesButtons').first();
+    if (!$btnRow.length || !$extraButtons.length || $btnRow.find('.cs-tag-msg-btn').length) return;
 
     const extra = getMsgExtraForTags(Number(mesId));
     const hasTags = !!(extra && extra.csTags.length);
@@ -369,15 +386,9 @@ function addTagButtonToMessage(mesId) {
     const $btn = $(
         `<div class="mes_button cs-tag-msg-btn fa-solid fa-hashtag ${hasTags ? 'cs-tag-msg-btn-active' : ''}" title="태그 달기" data-mesid="${mesId}"></div>`,
     );
-    // ST 내부에 "..." 전용 숨김 컨테이너가 따로 없는 버전도 있어서,
-    // 컨테이너에 의존하지 않고 그냥 mes_buttons 안에 넣되 CSS로 기본 숨김 처리하고
-    // "..." (extraMesButtonsHint) 클릭에 맞춰 우리 버튼만 따로 열고 닫음.
-    const $hint = $btnRow.find('.extraMesButtonsHint');
-    if ($hint.length) {
-        $btn.insertBefore($hint);
-    } else {
-        $btnRow.append($btn);
-    }
+    // 실리태번의 실제 "..." 메뉴 컨테이너 안에 넣는다. 메뉴 열기/닫기는
+    // ST 자체 동작을 그대로 따르므로 버튼만 따로 화면에 남지 않는다.
+    $extraButtons.prepend($btn);
 }
 
 function removeAllTagButtons() {
@@ -399,13 +410,6 @@ function bindChatTagEvents() {
         e.stopPropagation();
         const mesId = Number($(this).data('mesid'));
         openTagPopover($(this), mesId);
-    });
-
-    // ST의 "..." (더보기) 버튼을 누르면 우리 태그 버튼도 같이 열리고,
-    // 다시 누르면 같이 닫히게 함 (ST 내부 숨김 컨테이너 클래스에 의존하지 않음)
-    $(document).on('click', '.extraMesButtonsHint', function () {
-        const $mes = $(this).closest('.mes');
-        $mes.find('.cs-tag-msg-btn').toggleClass('cs-tag-msg-btn-open');
     });
 
     const context = SillyTavern.getContext();
@@ -1284,5 +1288,5 @@ jQuery(async () => {
     buildUI();
     bindChatTagEvents();
     refreshAllMessageTagButtons();
-    console.log('[chat-searching] 로드됨 (v6.2: 메시지 번호를 ST와 동일하게 고정 계산 - 파일은 무조건 첫 줄 제외)');
+    console.log('[chat-searching] 로드됨 (v6.3: 하이드 메시지 태그 저장 및 메시지 액션 메뉴 위치 수정)');
 });
